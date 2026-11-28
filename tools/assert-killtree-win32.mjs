@@ -74,15 +74,48 @@ if (!extracted) {
     assert(grandPid !== null, "win32：被测父子进程树已就绪（拿到孙进程 pid）");
     assert(pidAlive(parent.pid) && pidAlive(grandPid), "win32：调用前父子进程都活着（否则测试无效）");
 
-    makeKillTree(parent)();
-    // taskkill 异步结束，留时间
-    for (let i = 0; i < 30 && (pidAlive(parent.pid) || pidAlive(grandPid)); i++) await sleep(100);
-
-    assert(!pidAlive(parent.pid), `win32：主进程已被 taskkill 杀死`);
-    assert(!pidAlive(grandPid), `win32：孙进程（渲染子进程替身）也被杀干净 —— /T 树杀生效`);
-    assert(uncaught.length === 0,
-      `win32：killTree 全程无 uncaughtException（#74 的宿主暴毙形式）${uncaught.length ? "，实际: " + uncaught.map((e) => e.code).join(",") : ""}`);
-    try { parent.kill("SIGKILL"); } catch { /* 已死 */ }
+    // Observe the real taskkill, rather than assuming it finishes within 3s.
+    const deadlineMs = 20_000;
+    let killer;
+    let timer;
+    let spawnError;
+    const started = Date.now();
+    const completed = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ timeout: true }), deadlineMs);
+      const observedSpawn = (...args) => {
+        killer = spawn(...args);
+        killer.once("error", (error) => { spawnError = error; });
+        killer.once("close", (code, signal) => resolve({ code, signal }));
+        return killer;
+      };
+      makeKillTree(parent, observedSpawn)();
+    });
+    try {
+      const result = await completed;
+      clearTimeout(timer);
+      const diagnostic = `elapsed=${Date.now() - started}ms, timeout=${!!result.timeout}, ` +
+        `code=${result.code}, signal=${result.signal}, error=${spawnError?.code ?? "none"}, ` +
+        `parent=${parent.pid}:${pidAlive(parent.pid)}, grandchild=${grandPid}:${pidAlive(grandPid)}`;
+      console.log(`  taskkill: ${diagnostic}`);
+      assert(!result.timeout && !spawnError && result.code === 0,
+        `win32：taskkill completed successfully (${diagnostic})`);
+      assert(!pidAlive(parent.pid), `win32：主进程已被 taskkill 杀死`);
+      assert(!pidAlive(grandPid), `win32：孙进程（渲染子进程替身）也被杀干净 —— /T 树杀生效`);
+      assert(uncaught.length === 0,
+        `win32：killTree 全程无 uncaughtException（#74 的宿主暴毙形式）${uncaught.length ? "，实际: " + uncaught.map((e) => e.code).join(",") : ""}`);
+    } finally {
+      clearTimeout(timer);
+      // Only clean up processes spawned by this test; never use image-wide kills.
+      if (killer && killer.exitCode === null && killer.signalCode === null) {
+        try { killer.kill("SIGKILL"); } catch { /* already gone */ }
+      }
+      if (grandPid !== null && pidAlive(grandPid)) {
+        try { process.kill(grandPid, "SIGKILL"); } catch { /* already gone */ }
+      }
+      if (pidAlive(parent.pid)) {
+        try { parent.kill("SIGKILL"); } catch { /* already gone */ }
+      }
+    }
 
     // ---- 3. 降级：taskkill 本身失败（目标 pid 不存在）时宿主必须存活 ----
     const before = uncaught.length;
