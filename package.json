@@ -150,6 +150,9 @@
   },
   "optionalDependencies": {
     "@mozilla/readability": "0.6.0",
-    "jsdom": "26.1.0"
+    "jsdom": "26.1.0",
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "5.4.624",
+    "yauzl": "3.4.0"
   }
 }

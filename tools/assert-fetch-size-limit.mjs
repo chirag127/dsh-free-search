@@ -85,7 +85,8 @@ await check("omitted and undefined maxBytes use a 10 MiB boundary", async () => 
   await withServer((req, res) => res.end(Buffer.alloc(req.url === "/over" ? limit + 1 : limit, 120)), async url => {
     assert.equal((await httpsGetFollow(url)).text.length, limit);
     assert.equal((await httpsGetFollow(url, { maxBytes: undefined })).text.length, limit);
-    await assert.rejects(httpsGetFollow(`${url}over`), sizeError);
+    await assert.rejects(httpsGetFollow(`${url}over`, { maxWireBytes: limit + 1 }), sizeError);
+    await assert.rejects(httpsGetFollow(`${url}over`), { code: "ERR_FETCH_WIRE_SIZE_LIMIT" });
   });
 });
 
@@ -121,6 +122,72 @@ await check("cancellation below the cap still rejects and closes a stalled body"
   }, async url => {
     await assert.rejects(deadline(httpsGetFollow(url, { maxBytes: 10, signal: controller.signal })), /caller cancelled/);
     await deadline(closure);
+  });
+});
+await check("buffer mode preserves binary bytes and omits text", async () => {
+  const body = Buffer.from([0, 255, 254, 128, 13, 10]);
+  await withServer((req, res) => res.end(body), async url => {
+    const result = await httpsGetFollow(url, { responseType: "buffer" });
+    assert.deepEqual(result.buffer, body);
+    assert.equal("text" in result, false);
+  });
+});
+
+await check("new options reject before network", async () => {
+  const transport = { request() { assert.fail("network touched"); } };
+  for (const name of ["maxWireBytes", "totalTimeoutMs"]) {
+    for (const value of [0, -1, 1.5, Infinity, NaN, null, "1", Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(httpsGetFollow("http://localhost/", { [name]: value }, transport), TypeError);
+    }
+  }
+  for (const responseType of [null, "raw", "", 1]) {
+    await assert.rejects(httpsGetFollow("http://localhost/", { responseType }, transport), TypeError);
+  }
+});
+
+await check("wire cap independently counts chunked compressed bytes", async () => {
+  const body = Buffer.from(Array.from({ length: 1024 }, (_, i) => (i * 73 + (i >> 3)) % 256));
+  const packed = zlib.gzipSync(body, { level: 0 });
+  await withServer((req, res) => {
+    res.writeHead(200, { "content-encoding": "gzip" });
+    res.write(packed); res.end();
+  }, async url => {
+    await assert.rejects(httpsGetFollow(url, { maxBytes: 2048, maxWireBytes: packed.length - 1 }), { code: "ERR_FETCH_WIRE_SIZE_LIMIT" });
+    assert.deepEqual((await httpsGetFollow(url, { maxBytes: 1024, maxWireBytes: packed.length, responseType: "buffer" })).buffer, body);
+  });
+});
+
+await check("oversized content-length rejects without waiting for body", async () => {
+  await withServer((req, res) => {
+    res.writeHead(200, { "content-length": "1000" }); res.flushHeaders();
+  }, async url => {
+    await assert.rejects(deadline(httpsGetFollow(url, { maxWireBytes: 100 })), { code: "ERR_FETCH_WIRE_SIZE_LIMIT" });
+  });
+});
+
+await check("total deadline stops slow drip despite ongoing activity", async () => {
+  await withServer((req, res) => {
+    res.write("a");
+    const timer = setInterval(() => res.write("b"), 20);
+    res.on("close", () => clearInterval(timer));
+  }, async url => {
+    await assert.rejects(deadline(httpsGetFollow(url, { totalTimeoutMs: 150, timeoutMs: 1000 })), { code: "ERR_FETCH_TOTAL_TIMEOUT" });
+  });
+});
+
+await check("total deadline spans redirects and closes abandoned redirect bodies", async () => {
+  let redirectClosed = false;
+  await withServer((req, res) => {
+    if (req.url === "/") {
+      res.on("close", () => { redirectClosed = true; });
+      setTimeout(() => { res.writeHead(302, { location: "/final" }); res.write("redirect"); }, 80);
+    } else {
+      const timer = setTimeout(() => res.end("late"), 250);
+      res.on("close", () => clearTimeout(timer));
+    }
+  }, async url => {
+    await assert.rejects(deadline(httpsGetFollow(url, { totalTimeoutMs: 180 })), { code: "ERR_FETCH_TOTAL_TIMEOUT" });
+    assert.equal(redirectClosed, true);
   });
 });
 console.log(`OK: ${checks} fetch size limit checks passed`);
