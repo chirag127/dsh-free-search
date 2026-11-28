@@ -158,7 +158,7 @@ section("I. runEngineTest 重试分支收口");
   const helperFree = code.replace(/const attemptWithKeyRotation = async \(\) => \{[\s\S]*?\n    \};/, "");
   assert(!/return await attempt\(\)/.test(helperFree), "代码里没有裸 `return await attempt()`（重试不得原样返回）");
   assert(/await attemptWithKeyRotation\(\)/.test(code), "首次与重试都经 attemptWithKeyRotation（#96 多 key 轮换）");
-  assert(/const finalize = \(r\) => \(/.test(body), "存在统一收尾函数 finalize");
+  assert(/const finalize = \((?:r|raw)\) => (?:\(|\{)/.test(body), "存在统一收尾函数 finalize");
   assert(/return finalize\(result\)/.test(code), "首次成功路径走 finalize");
   assert(/return finalize\(retried\)/.test(code), "重试成功路径走 finalize（修复点）");
   assert(/if \(retried\.ok === false\) return retried;/.test(code), "重试若返回付费引擎的失败结果，仍如实透传");
