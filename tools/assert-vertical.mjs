@@ -13,7 +13,8 @@ const section = (t) => console.log("\n== " + t + " ==");
 section("A. 注册表与工具形态（离线）");
 const { ENGINES, registerDomainSearchTool } = await import("../lib/vertical.js");
 const keys = Object.keys(ENGINES);
-assert(keys.length === 49, `引擎注册表共 49 个（实际 ${keys.length}）`);
+assert(keys.length === 50, `引擎注册表共 50 个（实际 ${keys.length}）`);
+assert(typeof ENGINES.hex_pm?.run === 'function', 'hex_pm is available through domain_search');
 for (const id of ['clinicaltrials', 'openlibrary', 'dryad', 'figshare', 'datacite', 'openaire', 'gutendex', 'tvmaze']) {
   assert(typeof ENGINES[id]?.run === 'function', `${id} is available through domain_search`);
 }
